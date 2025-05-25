@@ -1,7 +1,7 @@
 import json
 import requests
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 # 设置机器人 Token 和频道 ID
 TOKEN = '8092070129:AAGxrcDxMFniPLjNnZ4eNYd-Mtq9JBra-60'
@@ -24,68 +24,60 @@ def save_users(users):
         json.dump(users, f, indent=4)
 
 # 启动命令
-async def start(update: Update, context: CallbackContext) -> None:
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text('欢迎使用匿名转发机器人！')
 
 # 处理用户消息并转发到频道
-async def forward_message(update: Update, context: CallbackContext) -> None:
-    # 获取消息内容
+async def forward_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text
-
-    # 向指定频道转发消息
     await context.bot.send_message(chat_id=CHANNEL_ID, text=text, disable_notification=True)
 
-    # 获取用户信息
     user_id = update.message.from_user.id
-    username = update.message.from_user.username  # 获取用户名（如果存在）
-
-    # 将用户信息添加到用户列表
+    username = update.message.from_user.username
     users = load_users()
-
-    # 检查用户是否已存在，不存在则添加
     if not any(user['user_id'] == user_id for user in users):
         users.append({'user_id': user_id, 'username': username})
         save_users(users)
 
 # 广播命令
-async def broadcast(update: Update, context: CallbackContext) -> None:
-    # 检查是否为管理员
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message.from_user.id != ADMIN_ID:
         await update.message.reply_text("只有管理员才能使用此命令！")
         return
-    
-    # 获取广播内容
+
     if context.args:
-        message = ' '.join(context.args)  # 获取用户输入的广播内容
-        # 向所有用户广播消息
+        message = ' '.join(context.args)
         users = load_users()
         for user in users:
             user_id = user['user_id']
-            await context.bot.send_message(chat_id=user_id, text=message, disable_notification=True)
+            try:
+                await context.bot.send_message(chat_id=user_id, text=message, disable_notification=True)
+            except Exception as e:
+                print(f"无法发送给 {user_id}：{e}")
         await update.message.reply_text("消息已广播给所有用户！")
     else:
         await update.message.reply_text("请提供要广播的消息内容！")
 
-def main():
-    # 创建 Application 对象
+# 主函数（异步）
+async def main():
     application = Application.builder().token(TOKEN).build()
 
-    # 处理启动命令
     application.add_handler(CommandHandler("start", start))
-
-    # 处理所有文本消息
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, forward_message))
+    application.add_handler(CommandHandler("broadcast", broadcast))  # 删除 pass_args
 
-    # 添加广播命令（管理员使用）
-    application.add_handler(CommandHandler("broadcast", broadcast, pass_args=True))
+    # 设置 Webhook
+    webhook_url = "https://qingting-1.onrender.com/" + TOKEN
+    await application.bot.set_webhook(url=webhook_url)
 
-    # 启动 Webhook
-    webhook_url = "https://qingting.onrender-1.com/" + TOKEN
-    application.bot.set_webhook(url=webhook_url)
+    # 启动 Webhook 模式
+    await application.run_webhook(
+        listen="0.0.0.0",
+        port=10000,
+        webhook_url=webhook_url
+    )
 
-    # 启动机器人
-    application.run_polling()
-
+# 启动入口
 if __name__ == '__main__':
-    main()
-
+    import asyncio
+    asyncio.run(main())
