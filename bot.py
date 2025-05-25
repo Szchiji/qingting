@@ -80,7 +80,7 @@ def main():
     application.add_handler(CommandHandler("broadcast", broadcast, pass_args=True))
 
     # 启动 Webhook
-    webhook_url = "https://qingting.onrender.com/" + TOKEN
+    webhook_url = "https://qingting.onrender-1.com/" + TOKEN
     application.bot.set_webhook(url=webhook_url)
 
     # 启动机器人
