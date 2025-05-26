@@ -43,11 +43,11 @@ def main():
     print(f"设置Webhook地址: {webhook_url}, 监听端口: {port}")
 
     app.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        webhook_url=webhook_url,
-        webhook_path=webhook_path,
-    )
+    listen="0.0.0.0",
+    port=PORT,
+    url_path=BOT_TOKEN,         # 最新版参数名是 url_path
+    webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}",
+)
 
 if __name__ == "__main__":
     main()
