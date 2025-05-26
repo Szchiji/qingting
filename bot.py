@@ -1,137 +1,163 @@
 import os
-import logging
+import json
+import time
 import asyncio
 from datetime import datetime, timedelta
-
-from telegram import InputMediaPhoto, InputMediaVideo, Update
+from collections import defaultdict
+from telegram import Update, InputMediaPhoto, InputMediaVideo
 from telegram.ext import (
     ApplicationBuilder,
-    ContextTypes,
+    CommandHandler,
     MessageHandler,
+    ContextTypes,
     filters,
 )
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-PORT = int(os.getenv("PORT", "10000"))
+CHANNEL_ID = os.getenv("CHANNEL_ID")  # 如：-1001763041158
+ADMIN_ID = int(os.getenv("ADMIN_ID"))  # 管理员用户ID，如：7848870377
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # 如：https://your-domain.com
+PORT = int(os.getenv("PORT", 10000))
 
-LIMIT_SECONDS = 10
-MEDIA_GROUP_WAIT = 1  # 秒，缓存同组消息的等待时间
+# 存储 /start 消息内容
+START_TEXT_FILE = "start_text.json"
+if os.path.exists(START_TEXT_FILE):
+    with open(START_TEXT_FILE, "r") as f:
+        START_TEXT = json.load(f).get("text", "欢迎使用本机器人，发送消息即可匿名投稿。")
+else:
+    START_TEXT = "欢迎使用本机器人，发送消息即可匿名投稿。"
 
-last_msg_time = {}
+# 消息限流数据
+user_message_times = defaultdict(list)
+HOURLY_LIMIT = 60
+DAILY_LIMIT = 500
+
+# 多媒体组缓存
 media_group_cache = {}
 
+def save_start_text(text):
+    with open(START_TEXT_FILE, "w") as f:
+        json.dump({"text": text}, f)
 
-async def send_media_group(context: ContextTypes.DEFAULT_TYPE, media_group_id: str):
-    group = media_group_cache.pop(media_group_id, None)
-    if not group:
-        return
+def is_allowed(user_id):
+    now = datetime.now()
+    timestamps = user_message_times[user_id]
+    timestamps = [t for t in timestamps if now - t < timedelta(days=1)]
+    user_message_times[user_id] = timestamps
 
-    messages = group["messages"]
-    media = []
-    for update in messages:
-        msg = update.message
-        caption = msg.caption or ""
-        if msg.photo:
-            media.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=caption))
-        elif msg.video:
-            media.append(InputMediaVideo(media=msg.video.file_id, caption=caption))
-        else:
-            # 跳过非图片/视频消息
-            pass
+    hourly_count = len([t for t in timestamps if now - t < timedelta(hours=1)])
+    daily_count = len(timestamps)
 
-    if not media:
-        # 没有合适媒体，单条转发文本
-        for update in messages:
-            text = update.message.text or ""
-            if text:
-                try:
-                    await context.bot.send_message(chat_id=CHANNEL_ID, text=text)
-                except Exception as e:
-                    logger.error(f"转发文本失败: {e}")
-        return
+    if hourly_count >= HOURLY_LIMIT or daily_count >= DAILY_LIMIT:
+        return False
+    timestamps.append(now)
+    return True
 
+async def delete_after_delay(msg, delay=10):
+    await asyncio.sleep(delay)
     try:
-        await context.bot.send_media_group(chat_id=CHANNEL_ID, media=media)
-    except Exception as e:
-        logger.error(f"转发media group失败: {e}")
+        await msg.delete()
+    except:
+        pass
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(START_TEXT)
 
-async def wait_and_send_media_group(context: ContextTypes.DEFAULT_TYPE, media_group_id: str):
-    await asyncio.sleep(MEDIA_GROUP_WAIT)
-    await send_media_group(context, media_group_id)
+async def set_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    new_text = " ".join(context.args)
+    if new_text:
+        global START_TEXT
+        START_TEXT = new_text
+        save_start_text(new_text)
+        msg = await update.message.reply_text("Start 信息已更新")
+        await delete_after_delay(msg)
 
-
-async def forward_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    now = datetime.utcnow()
-
-    last_time = last_msg_time.get(user_id)
-    if last_time and (now - last_time) < timedelta(seconds=LIMIT_SECONDS):
-        try:
-            await update.message.reply_text(f"发送太快啦，请{LIMIT_SECONDS}秒后再试。")
-        except Exception as e:
-            logger.error(f"限流反馈失败: {e}")
+    if not is_allowed(user_id):
+        msg = await update.message.reply_text("您发送太频繁，请稍后再试。")
+        await delete_after_delay(msg)
         return
-
-    last_msg_time[user_id] = now
-
-    msg = update.message
-
-    if msg.media_group_id:
-        mgid = msg.media_group_id
-        if mgid not in media_group_cache:
-            media_group_cache[mgid] = {
-                "messages": [],
-                "timer_task": context.application.create_task(
-                    wait_and_send_media_group(context, mgid)
-                ),
-            }
-        media_group_cache[mgid]["messages"].append(update)
-        return
-
-    # 非群组消息单条转发
     try:
-        if msg.text:
-            await context.bot.send_message(chat_id=CHANNEL_ID, text=msg.text)
-        elif msg.photo:
-            await context.bot.send_photo(
-                chat_id=CHANNEL_ID, photo=msg.photo[-1].file_id, caption=msg.caption or ""
-            )
-        elif msg.video:
-            await context.bot.send_video(
-                chat_id=CHANNEL_ID, video=msg.video.file_id, caption=msg.caption or ""
-            )
-        else:
-            await update.message.reply_text("暂时只支持文本、图片和视频转发。")
-            return
+        await context.bot.send_message(chat_id=CHANNEL_ID, text=update.message.text)
+        msg = await update.message.reply_text("发送成功！")
+    except Exception:
+        msg = await update.message.reply_text("发送失败，请稍后再试。")
+    await delete_after_delay(msg)
 
-        feedback = await update.message.reply_text("发送成功，10秒后此消息自动删除。")
-        await asyncio.sleep(10)
-        await feedback.delete()
-    except Exception as e:
-        logger.error(f"转发消息失败: {e}")
+async def handle_media_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    user_id = message.from_user.id
+    if not is_allowed(user_id):
+        msg = await message.reply_text("您发送太频繁，请稍后再试。")
+        await delete_after_delay(msg)
+        return
 
+    group_id = message.media_group_id
+    if group_id not in media_group_cache:
+        media_group_cache[group_id] = []
+
+    media_group_cache[group_id].append(message)
+
+    # 等待 1 秒确认一组已完成
+    await asyncio.sleep(1)
+
+    if group_id in media_group_cache:
+        messages = media_group_cache.pop(group_id)
+        media = []
+        for msg in messages:
+            if msg.photo:
+                file = msg.photo[-1].file_id
+                media.append(InputMediaPhoto(media=file, caption=msg.caption if len(media) == 0 else None))
+            elif msg.video:
+                file = msg.video.file_id
+                media.append(InputMediaVideo(media=file, caption=msg.caption if len(media) == 0 else None))
+
+        try:
+            await context.bot.send_media_group(chat_id=CHANNEL_ID, media=media)
+            res = await message.reply_text("发送成功！")
+        except Exception:
+            res = await message.reply_text("发送失败，请稍后再试。")
+        await delete_after_delay(res)
+
+async def handle_photo_or_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.media_group_id:
+        await handle_media_group(update, context)
+        return
+
+    user_id = update.effective_user.id
+    if not is_allowed(user_id):
+        msg = await update.message.reply_text("您发送太频繁，请稍后再试。")
+        await delete_after_delay(msg)
+        return
+
+    caption = update.message.caption
+    file = update.message.photo[-1].file_id if update.message.photo else update.message.video.file_id
+    media = InputMediaPhoto(media=file, caption=caption) if update.message.photo else InputMediaVideo(media=file, caption=caption)
+
+    try:
+        await context.bot.send_media_group(chat_id=CHANNEL_ID, media=[media])
+        msg = await update.message.reply_text("发送成功！")
+    except Exception:
+        msg = await update.message.reply_text("发送失败，请稍后再试。")
+    await delete_after_delay(msg)
 
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(MessageHandler(filters.ALL & (~filters.COMMAND), forward_message))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("setstart", set_start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, handle_photo_or_video))
 
-    logger.info(f"设置Webhook地址: {WEBHOOK_URL}/{BOT_TOKEN}, 监听端口: {PORT}")
-
+    print(f"设置Webhook地址: {WEBHOOK_URL}/{BOT_TOKEN}, 监听端口: {PORT}")
     app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
         url_path=BOT_TOKEN,
         webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}",
     )
-
 
 if __name__ == "__main__":
     main()
