@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: qingting-bot
+    env: python
+    region: oregon
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        value: "8092070129:AAGxrcDxMFniPLjNnZ4eNYd-Mtq9JBra-60"
+      - key: CHANNEL_ID
+        value: "-1001763041158"
+      - key: WEBHOOK_URL
+        value: "https://qingting-1.onrender.com"
+      - key: ADMIN_ID
+        value: "7848870377"
+      - key: PORT
+        value: "10000"
