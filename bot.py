@@ -30,5 +30,5 @@ if __name__ == "__main__":
     app.run_webhook(
         listen="0.0.0.0",
         port=8080,
-        webhook_url=WEBHOOK_URL,
+        webhook_url=qingting-1.onrender.com,
     )
